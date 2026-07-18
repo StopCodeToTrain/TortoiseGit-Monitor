@@ -6,6 +6,8 @@ Git 操作封装：状态检测、日志获取、diff 查看。
 节流策略：同一仓库 2 分钟内不重复 fetch，减少网络开销。
 """
 
+from __future__ import annotations
+
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed

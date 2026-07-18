@@ -4,6 +4,8 @@ TortoiseGit-Monitor - 托盘应用。
 左键/右键均弹出菜单：仓库快捷入口 + 设置 + 刷新 + 退出。
 """
 
+from __future__ import annotations
+
 import subprocess
 from pathlib import Path
 
