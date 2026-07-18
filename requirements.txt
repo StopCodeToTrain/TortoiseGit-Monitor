@@ -1,3 +1,0 @@
-# TortoiseGit-Monitor
-# Windows 系统托盘应用，定时检测 git 仓库状态
-PyQt6>=6.5,<7.0
