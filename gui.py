@@ -12,7 +12,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QEvent, QObject, QPoint, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QIcon, QPainter, QPixmap, QPolygon
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QMenu, QPushButton, QSpinBox, QSystemTrayIcon,
     QVBoxLayout,
@@ -178,6 +178,10 @@ TG_CANDIDATES = [
 ]
 
 def find_tortoisegit() -> str | None:
+    # 优先使用设置中显式指定的路径
+    custom = get_global().get("tortoisegit_path", "").strip()
+    if custom and Path(custom).exists():
+        return custom
     for p in TG_CANDIDATES:
         if Path(p).exists():
             return p
@@ -281,6 +285,22 @@ class SettingsDialog(QDialog):
         gl.addRow(self.chk_sound)
         layout.addWidget(gb_poll)
 
+        # ── TortoiseGit ──
+        gb_tg = QGroupBox("TortoiseGit")
+        tl = QFormLayout(gb_tg)
+        row = QHBoxLayout()
+        self.edit_tg = QLineEdit()
+        self.edit_tg.setPlaceholderText("留空则自动查找（Show Log 快捷操作使用）")
+        row.addWidget(self.edit_tg, 1)
+        btn_browse = QPushButton("浏览...")
+        btn_browse.clicked.connect(self._browse_tg)
+        row.addWidget(btn_browse)
+        btn_clear = QPushButton("清除")
+        btn_clear.clicked.connect(self.edit_tg.clear)
+        row.addWidget(btn_clear)
+        tl.addRow("程序路径:", row)
+        layout.addWidget(gb_tg)
+
         # ── 扫描目录 ──
         gb_scan = QGroupBox("扫描目录")
         sl = QVBoxLayout(gb_scan)
@@ -318,6 +338,7 @@ class SettingsDialog(QDialog):
         self.spin_log_count.setValue(glb.get("log_count", 10))
         self.chk_notify.setChecked(glb.get("show_notifications", True))
         self.chk_sound.setChecked(glb.get("notification_sound", False))
+        self.edit_tg.setText(glb.get("tortoisegit_path", ""))
         for p in data.get("scan_paths", []):
             self.scan_list.addItem(p)
 
@@ -327,11 +348,20 @@ class SettingsDialog(QDialog):
             "log_count": self.spin_log_count.value(),
             "show_notifications": self.chk_notify.isChecked(),
             "notification_sound": self.chk_sound.isChecked(),
+            "tortoisegit_path": self.edit_tg.text().strip(),
         })
         data = load()
         data["scan_paths"] = [self.scan_list.item(i).text() for i in range(self.scan_list.count())]
         save(data)
         self.accept()
+
+    def _browse_tg(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 TortoiseGitProc.exe", "",
+            "TortoiseGitProc (TortoiseGitProc.exe);;所有文件 (*)",
+        )
+        if path:
+            self.edit_tg.setText(path)
 
     def _add_scan(self):
         path = self.edit_scan.text().strip()

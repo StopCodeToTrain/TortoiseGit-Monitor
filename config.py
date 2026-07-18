@@ -9,6 +9,7 @@
       "start_with_windows": false, // 随系统启动
       "show_notifications": true,  // 显示弹出通知
       "notification_sound": false, // 通知时播放声音
+      "tortoisegit_path": "",      // TortoiseGitProc.exe 路径，留空自动查找
     },
     "projects": [
       {
@@ -45,6 +46,7 @@ DEFAULT_GLOBAL: dict[str, Any] = {
     "start_with_windows": False,
     "show_notifications": True,
     "notification_sound": False,
+    "tortoisegit_path": "",  # TortoiseGitProc.exe 路径，留空则自动查找
 }
 
 DEFAULT_SCAN_PATHS = [
@@ -126,6 +128,7 @@ def _migrate(data: dict) -> dict:
             "start_with_windows": data.get("start_with_windows", False),
             "show_notifications": data.get("show_notifications", True),
             "notification_sound": data.get("notification_sound", False),
+            "tortoisegit_path": data.get("tortoisegit_path", ""),
         },
         "projects": [],
         "scan_paths": data.get("scan_paths", list(DEFAULT_SCAN_PATHS)),
