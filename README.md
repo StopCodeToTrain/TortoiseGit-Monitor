@@ -40,10 +40,13 @@ Windows 系统托盘应用，定时检测本地 Git 仓库状态，支持 Tortoi
 
 ```bash
 pip install -r requirements.txt
-python main.py
+pythonw run.pyw
 ```
 
-建议将 `main.py` 放入 Windows 启动目录或配置为计划任务实现开机自启。
+- `python main.py` — 调试模式，带控制台窗口
+- `pythonw run.pyw` — 常驻后台，无控制台，关闭命令行窗口不会退出
+
+建议将 `run.pyw` 放入 Windows 启动目录或配置为计划任务实现开机自启。
 
 ## 依赖
 
