@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Git 操作封装：状态检测、日志获取、diff 查看。
  * 通过子进程调用 git 命令，避免额外依赖。
  *
@@ -97,58 +97,15 @@ namespace TortoiseGitMonitor
         //  底层 git 调用
         // ═══════════════════════════
 
-        private sealed class GitResult
-        {
-            public string Stdout = "";
-            public string Stderr = "";
-            public int Code = 1;
-        }
-
         private static double Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
 
-        /// <summary>执行 git 命令，返回 (stdout, stderr, returncode)。</summary>
-        private static GitResult Run(string cwd, int timeoutSec, params string[] args)
+        private static ProcessResult Run(string cwd, int timeoutSec, params string[] args)
         {
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "git",
-                    Arguments = ProcessUtil.BuildArguments(args),
-                    WorkingDirectory = cwd,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8,
-                    CreateNoWindow = true,
-                };
-                using (Process process = Process.Start(psi))
-                {
-                    Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
-                    Task<string> stderrTask = process.StandardError.ReadToEndAsync();
-                    if (!process.WaitForExit(timeoutSec * 1000))
-                    {
-                        try { process.Kill(); } catch (Exception) { /* 进程可能已退出 */ }
-                        return new GitResult { Stderr = "操作超时" };
-                    }
-                    process.WaitForExit(); // 等待异步输出读取完成
-                    return new GitResult
-                    {
-                        Stdout = stdoutTask.Result.Trim(),
-                        Stderr = stderrTask.Result.Trim(),
-                        Code = process.ExitCode,
-                    };
-                }
-            }
-            catch (Win32Exception)
-            {
-                return new GitResult { Stderr = "git 未找到，请确认 git 已安装且在 PATH 中" };
-            }
-            catch (Exception ex)
-            {
-                return new GitResult { Stderr = ex.Message };
-            }
+            ProcessResult result = GitProcess.Read(cwd, timeoutSec, args);
+            // porcelain 的首列空格有语义，不能对整个输出 Trim。
+            if (args.Length == 0 || args[0] != "status") result.Stdout = result.Stdout.Trim();
+            result.Stderr = result.Stderr.Trim();
+            return result;
         }
 
         /// <summary>检查是否为有效的 git 仓库且 git 可用。</summary>
@@ -169,6 +126,16 @@ namespace TortoiseGitMonitor
             int fetchCooldown = FetchCooldownSec,
             bool checkBranchesFlag = false)
         {
+            using (var operation = RepositoryOperation.TryEnter(repoPath))
+            {
+                if (operation == null)
+                    return new GitStatus { RepoPath = repoPath, RepoName = Path.GetFileName(repoPath), Error = "仓库正在同步或切换分支，稍后检测" };
+                return CheckRepoCore(repoPath, logCount, schedule, fetchCooldown, checkBranchesFlag);
+            }
+        }
+
+        private static GitStatus CheckRepoCore(string repoPath, int logCount, RepoScheduleState schedule, int fetchCooldown, bool checkBranchesFlag)
+        {
             var status = new GitStatus
             {
                 RepoPath = repoPath,
@@ -184,12 +151,12 @@ namespace TortoiseGitMonitor
             }
 
             // ── 分支名 ──
-            GitResult branchResult = Run(repoPath, 10, "rev-parse", "--abbrev-ref", "HEAD");
+            ProcessResult branchResult = Run(repoPath, 10, "rev-parse", "--abbrev-ref", "HEAD");
             status.Branch = branchResult.Stdout;
             bool isDetached = branchResult.Stdout == "HEAD";
 
             // ── fetch 远程（带节流）──
-            GitResult remoteResult = Run(repoPath, 5, "remote");
+            ProcessResult remoteResult = Run(repoPath, 5, "remote");
             var remotes = remoteResult.Stdout
                 .Split('\n')
                 .Where(r => r.Trim().Length > 0)
@@ -207,7 +174,7 @@ namespace TortoiseGitMonitor
 
             if (shouldFetch)
             {
-                GitResult fetchResult = Run(repoPath, FetchTimeoutSec, "fetch", "--prune", "--quiet");
+                ProcessResult fetchResult = GitProcess.Write(repoPath, "后台 fetch", null, CancellationToken.None, FetchTimeoutSec, "fetch", "--prune", "--quiet");
                 if (schedule != null)
                     schedule.LastFetchTime = Now();
                 // 检查 fetch 错误：返回码非0 或 stderr 含错误关键词
@@ -225,7 +192,7 @@ namespace TortoiseGitMonitor
             // 计算 ahead / behind：使用 @{u} 自动识别上游分支（避免硬编码 origin）
             if (status.HasRemote && !isDetached)
             {
-                GitResult revResult = Run(repoPath, 10, "rev-list", "--left-right", "--count", "@{u}...HEAD");
+                ProcessResult revResult = Run(repoPath, 10, "rev-list", "--left-right", "--count", "@{u}...HEAD");
                 if (revResult.Code == 0 && revResult.Stdout.Length > 0)
                 {
                     string[] parts = revResult.Stdout.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
@@ -240,7 +207,7 @@ namespace TortoiseGitMonitor
             }
 
             // ── 本地状态 ──
-            GitResult porcelain = Run(repoPath, 10, "status", "--porcelain");
+            ProcessResult porcelain = Run(repoPath, 10, "status", "--porcelain");
             if (porcelain.Stdout.Length > 0)
             {
                 status.Dirty = true;
@@ -266,7 +233,7 @@ namespace TortoiseGitMonitor
 
             // ── 最近提交 ──
             // 格式: hash||date||author||message  （用 || 分隔，便于解析）
-            GitResult logResult = Run(repoPath, 5,
+            ProcessResult logResult = Run(repoPath, 5,
                 "log", "-n", logCount.ToString(), "--date=iso", "--format=%h||%ad||%an||%s");
             if (logResult.Stdout.Length > 0)
                 status.RecentCommits = new List<string>(logResult.Stdout.Split('\n'));
@@ -274,7 +241,7 @@ namespace TortoiseGitMonitor
                 status.Error = "空仓库（无提交历史）";
 
             // ── diff stat ──
-            GitResult diffResult = Run(repoPath, 10, "diff", "--stat");
+            ProcessResult diffResult = Run(repoPath, 10, "diff", "--stat");
             if (diffResult.Stdout.Length > 0)
                 status.DiffStat = diffResult.Stdout;
 
@@ -295,7 +262,7 @@ namespace TortoiseGitMonitor
             var branches = new List<BranchStatus>();
 
             // git branch -vv: 列出所有本地分支及其跟踪关系
-            GitResult result = Run(repoPath, 10,
+            ProcessResult result = Run(repoPath, 10,
                 "branch", "-vv",
                 "--format=%(refname:short)|%(upstream:short)|%(upstream:track,nobracket)|%(objectname:short)");
             if (result.Code != 0 || result.Stdout.Length == 0)
@@ -349,7 +316,7 @@ namespace TortoiseGitMonitor
             }
 
             // 标记当前分支
-            GitResult current = Run(repoPath, 10, "rev-parse", "--abbrev-ref", "HEAD");
+            ProcessResult current = Run(repoPath, 10, "rev-parse", "--abbrev-ref", "HEAD");
             foreach (BranchStatus b in branches)
             {
                 if (b.Name == current.Stdout.Trim())
@@ -417,7 +384,7 @@ namespace TortoiseGitMonitor
         public static CommitDetail GetCommitDetail(string repoPath, string commitHash)
         {
             // ── 基本信息 ──
-            GitResult result = Run(repoPath, 5,
+            ProcessResult result = Run(repoPath, 5,
                 "show", "--no-patch", "--format=%H||%h||%an||%ad||%s",
                 "--date=relative", commitHash);
             if (result.Code != 0 || result.Stdout.Length == 0)
@@ -437,7 +404,7 @@ namespace TortoiseGitMonitor
             };
 
             // ── 变更文件列表 ──
-            GitResult statResult = Run(repoPath, 10, "show", "--stat", "--format=", commitHash);
+            ProcessResult statResult = Run(repoPath, 10, "show", "--stat", "--format=", commitHash);
             if (statResult.Stdout.Length > 0)
                 detail.ChangedFiles = ParseChangedFiles(statResult.Stdout);
 
@@ -447,7 +414,7 @@ namespace TortoiseGitMonitor
         /// <summary>获取某个文件在某次提交中的 diff 内容。</summary>
         public static string GetCommitFileDiff(string repoPath, string commitHash, string filePath, int maxLines = 200)
         {
-            GitResult result = Run(repoPath, 10, "show", commitHash, "--", filePath);
+            ProcessResult result = Run(repoPath, 10, "show", commitHash, "--", filePath);
             if (result.Code != 0)
                 return result.Stderr.Length > 0 ? result.Stderr : "无法获取 diff";
             string[] lines = result.Stdout.Split('\n');
@@ -459,7 +426,7 @@ namespace TortoiseGitMonitor
         /// <summary>获取当前未暂存变更中某个文件的 diff。</summary>
         public static string GetUnstagedFileDiff(string repoPath, string filePath, int maxLines = 200)
         {
-            GitResult result = Run(repoPath, 10, "diff", "--", filePath);
+            ProcessResult result = Run(repoPath, 10, "diff", "--", filePath);
             if (result.Code != 0)
                 return result.Stderr.Length > 0 ? result.Stderr : "无变更";
             if (result.Stdout.Length == 0)

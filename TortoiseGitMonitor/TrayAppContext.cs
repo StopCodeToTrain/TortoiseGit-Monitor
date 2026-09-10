@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TortoiseGit-Monitor - 托盘应用。
  * 无主窗口，所有交互通过系统托盘完成。
  * 左键/右键均弹出菜单：仓库快捷入口 + 设置 + 刷新 + 退出。
@@ -331,6 +331,8 @@ namespace TortoiseGitMonitor
             }
 
             // ── 静态菜单项 ──
+            _menu.Items.Add(new ToolStripMenuItem("⇣  一键 Pull 更新", null, (s, e) => PullUpdate()));
+            _menu.Items.Add(new ToolStripMenuItem("⑂  全部切换分支...", null, (s, e) => SwitchAllBranches()));
             _menu.Items.Add(new ToolStripMenuItem("⟳  刷新全部", null, (s, e) => Refresh()));
             _menu.Items.Add(new ToolStripSeparator());
             _menu.Items.Add(new ToolStripMenuItem("⚙  设置...", null, (s, e) => OpenSettings()));
@@ -520,6 +522,59 @@ namespace TortoiseGitMonitor
             }
         }
 
+        /// <summary>一键 Pull 更新：后台解析仓库列表后打开同步进度窗口。</summary>
+        private void PullUpdate()
+        {
+            if (_exiting)
+                return;
+            // 目录扫描可能耗时，放到后台线程，完成后回 UI 线程打开窗口
+            Task.Run(() =>
+            {
+                List<string> repos = AppConfig.ResolveRepoPaths(AppConfig.Load());
+                if (_exiting)
+                    return;
+                _invoker.BeginInvoke((Action)(() =>
+                {
+                    if (repos.Count == 0)
+                    {
+                        MessageBox.Show("未发现任何 git 仓库，请先在设置中配置扫描目录。",
+                            "一键 Pull 更新", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+                    // 同步完成后刷新一轮状态
+                    SyncForm.ShowFor(repos, onComplete: Refresh);
+                }));
+            });
+        }
+
+        /// <summary>全部切换分支：先输入目标分支，再后台解析仓库列表并打开进度窗口。</summary>
+        private void SwitchAllBranches()
+        {
+            if (_exiting)
+                return;
+            string branch = BranchInputDialog.Prompt(null);
+            if (branch == null)
+                return;
+            // 目录扫描可能耗时，放到后台线程，完成后回 UI 线程打开窗口
+            Task.Run(() =>
+            {
+                List<string> repos = AppConfig.ResolveRepoPaths(AppConfig.Load());
+                if (_exiting)
+                    return;
+                _invoker.BeginInvoke((Action)(() =>
+                {
+                    if (repos.Count == 0)
+                    {
+                        MessageBox.Show("未发现任何 git 仓库，请先在设置中配置扫描目录。",
+                            "全部切换分支", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+                    // 切换完成后刷新一轮状态
+                    BranchSwitchForm.ShowFor(repos, branch, onComplete: Refresh);
+                }));
+            });
+        }
+
         private void OpenSettings()
         {
             using (var dlg = new SettingsForm())
@@ -534,6 +589,11 @@ namespace TortoiseGitMonitor
 
         private void Quit()
         {
+            if (SyncForm.IsRunning || BranchSwitchForm.IsRunning)
+            {
+                MessageBox.Show("同步或分支切换仍在运行，请等待完成；一键 Pull 更新可在进度窗口选择安全停止。", "暂不能退出");
+                return;
+            }
             _exiting = true;
             _timer.Stop();
             _tray.Visible = false;

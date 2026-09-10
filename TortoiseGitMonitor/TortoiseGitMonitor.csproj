@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -40,17 +40,24 @@
     <Reference Include="System.Core" />
     <Reference Include="System.Drawing" />
     <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="AppConfig.cs" />
+    <Compile Include="BranchSwitchForm.cs" />
     <Compile Include="GitWatcher.cs" />
+    <Compile Include="GitSyncer.cs" />
+    <Compile Include="LlmClient.cs" />
     <Compile Include="Notifier.cs" />
     <Compile Include="ProcessUtil.cs" />
+    <Compile Include="ProcessRunner.cs" />
+    <Compile Include="GitProcess.cs" />
     <Compile Include="TrayAppContext.cs" />
     <Compile Include="SettingsForm.cs" />
+    <Compile Include="SyncForm.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

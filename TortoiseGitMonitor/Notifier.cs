@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Windows Toast 通知模块。
  * 使用 PowerShell 调用 COM 接口发送原生通知，零外部依赖。
  * （移植自 Python 版 notify.py，保持相同实现方式与转义纪律）
@@ -44,23 +44,8 @@ $notifier.Show($xml)
 ";
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "powershell",
-                    Arguments = "-NoProfile -Command " + ProcessUtil.QuoteArg(ps),
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                };
-                using (Process process = Process.Start(psi))
-                {
-                    // 最多等待 10 秒，通知失败不应影响主流程
-                    if (!process.WaitForExit(10 * 1000))
-                    {
-                        try { process.Kill(); } catch (Exception) { /* 忽略 */ }
-                    }
-                }
+                // 通知同样托管完整进程树，并排空双路输出，防止超时遗留 PowerShell 子进程。
+                ProcessRunner.Run("powershell", "-NoProfile -Command " + ProcessUtil.QuoteArg(ps), null, 10);
             }
             catch (Exception)
             {

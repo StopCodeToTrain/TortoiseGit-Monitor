@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>latest</LangVersion>
+    <CodePage>65001</CodePage>
+    <StartupObject>TortoiseGitMonitor.RegressionTests</StartupObject>
+    <AssemblyName>RegressionTests</AssemblyName>
+    <OutputPath>..\TortoiseGitMonitor\obj\RegressionTests\</OutputPath>
+    <IntermediateOutputPath>..\TortoiseGitMonitor\obj\RegressionTestsBuild\</IntermediateOutputPath>
+    <FrameworkPathOverride>$(WINDIR)\Microsoft.NET\Framework64\v4.0.30319</FrameworkPathOverride>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" /><Reference Include="System.Core" />
+    <Reference Include="System.Drawing" /><Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Web.Extensions" /><Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <Compile Include="..\TortoiseGitMonitor\*.cs" />
+    <Compile Include="RegressionTests.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

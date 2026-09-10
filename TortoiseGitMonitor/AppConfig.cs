@@ -13,6 +13,7 @@
  *       "show_notifications": true,  // 显示弹出通知
  *       "notification_sound": false, // 通知时播放声音
  *       "tortoisegit_path": "",      // TortoiseGitProc.exe 路径，留空自动查找
+ *       "post_switch_scripts": [],   // 全部切换分支完成后依次执行的脚本列表（可选）
  *     },
  *     "projects": [
  *       {
@@ -26,6 +27,16 @@
  *       },
  *     ],
  *     "scan_paths": ["~", "D:/GitProject"],  // 自动扫描目录
+ *     "llm": {
+ *       "provider": "anthropic",     // "anthropic" | "openai"
+ *       "api_key": "",               // 留空则用环境变量 GIT_SYNC_LLM_KEY
+ *       "base_url": "",              // 可选，代理/自部署/OpenAI 兼容服务
+ *       "model": "",                 // 模型名
+ *       "timeout": 60,               // 单次请求超时（秒）
+ *       "auto_apply_medium": false,  // 中置信度也自动应用（默认仅高置信度）
+ *       "destructive_ask": true,     // 破坏性合并前总是询问
+ *       "csv_resolver": "",          // 可选，CSV/plist 冲突解决脚本（python）
+ *     },
  *   }
  */
 using System;
@@ -59,6 +70,13 @@ namespace TortoiseGitMonitor
         [DataMember(Name = "tortoisegit_path")]
         public string TortoiseGitPath = "";
 
+        // 旧版单脚本字段（post_switch_script），仅用于读取迁移；保存时不写出
+        [DataMember(Name = "post_switch_script", EmitDefaultValue = false)]
+        public string PostSwitchScriptLegacy;
+
+        [DataMember(Name = "post_switch_scripts")]
+        public List<string> PostSwitchScripts = new List<string>();
+
         /// <summary>反序列化前填充默认值（缺失的键回退到默认值）。</summary>
         [OnDeserializing]
         private void OnDeserializing(StreamingContext context)
@@ -69,6 +87,58 @@ namespace TortoiseGitMonitor
             ShowNotifications = true;
             NotificationSound = false;
             TortoiseGitPath = "";
+            PostSwitchScriptLegacy = null;
+            PostSwitchScripts = new List<string>();
+        }
+    }
+
+    /// <summary>LLM 配置（对应 JSON 的 "llm" 节点），用于一键 Pull 更新时的冲突智能合并。</summary>
+    [DataContract]
+    internal sealed class LlmSettings
+    {
+        [DataMember(Name = "provider")]
+        public string Provider = "anthropic";
+
+        [DataMember(Name = "api_key")]
+        public string ApiKey = "";
+
+        [DataMember(Name = "base_url")]
+        public string BaseUrl = "";
+
+        [DataMember(Name = "model")]
+        public string Model = "";
+
+        [DataMember(Name = "timeout")]
+        public int Timeout;
+
+        [DataMember(Name = "auto_apply_medium")]
+        public bool AutoApplyMedium;
+
+        [DataMember(Name = "destructive_ask")]
+        public bool DestructiveAsk;
+
+        [DataMember(Name = "csv_resolver")]
+        public string CsvResolver = "";
+
+        [OnDeserializing]
+        private void OnDeserializing(StreamingContext context)
+        {
+            Provider = "anthropic";
+            ApiKey = "";
+            BaseUrl = "";
+            Model = "";
+            Timeout = 60;
+            AutoApplyMedium = false;
+            DestructiveAsk = true;
+            CsvResolver = "";
+        }
+
+        /// <summary>返回生效的 api_key：配置明文优先，其次环境变量 GIT_SYNC_LLM_KEY。</summary>
+        public string EffectiveApiKey()
+        {
+            if (!string.IsNullOrEmpty(ApiKey))
+                return ApiKey;
+            return Environment.GetEnvironmentVariable("GIT_SYNC_LLM_KEY") ?? "";
         }
     }
 
@@ -125,6 +195,9 @@ namespace TortoiseGitMonitor
 
         [DataMember(Name = "scan_paths")]
         public List<string> ScanPaths = new List<string>();
+
+        [DataMember(Name = "llm")]
+        public LlmSettings Llm = new LlmSettings();
 
         /// <summary>配置目录：%USERPROFILE%\.config\tortoisegit_monitor</summary>
         public static string ConfigDir =>
@@ -213,10 +286,20 @@ namespace TortoiseGitMonitor
             // 补全缺失字段
             if (data.Global == null)
                 data.Global = Defaults().Global;
+            // 旧版单脚本配置（post_switch_script）迁移到脚本列表
+            if (data.Global.PostSwitchScripts == null)
+                data.Global.PostSwitchScripts = new List<string>();
+            if (data.Global.PostSwitchScripts.Count == 0 && !string.IsNullOrEmpty(data.Global.PostSwitchScriptLegacy))
+            {
+                data.Global.PostSwitchScripts.Add(data.Global.PostSwitchScriptLegacy);
+                data.Global.PostSwitchScriptLegacy = null;
+            }
             if (data.Projects == null)
                 data.Projects = new List<ProjectEntry>();
             if (data.ScanPaths == null)
                 data.ScanPaths = DefaultScanPaths();
+            if (data.Llm == null)
+                data.Llm = new LlmSettings();
             foreach (ProjectEntry p in data.Projects)
             {
                 if (string.IsNullOrEmpty(p.Name))
