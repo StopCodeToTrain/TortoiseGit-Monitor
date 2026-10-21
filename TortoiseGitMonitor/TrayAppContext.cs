@@ -527,6 +527,9 @@ namespace TortoiseGitMonitor
         {
             if (_exiting)
                 return;
+            // 已有同步时立即显示原窗口，不重复扫描仓库或启动同步。
+            if (SyncForm.TryActivateExisting())
+                return;
             // 目录扫描可能耗时，放到后台线程，完成后回 UI 线程打开窗口
             Task.Run(() =>
             {

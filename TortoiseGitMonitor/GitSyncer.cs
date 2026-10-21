@@ -52,6 +52,10 @@ namespace TortoiseGitMonitor
         public bool StatusKnown;
         public int Staged, Unstaged, Untracked, Unmerged;
         public string StashCommit = "";
+        public List<string> StashCommits = new List<string>();
+        public bool ResumedStash;
+        public string UntrackedBackupDirectory = "";
+        public int UntrackedBackedUp;
         public string Head = "", Target = "";
         public int Ahead, Behind;
     }
@@ -59,6 +63,26 @@ namespace TortoiseGitMonitor
     /// <summary>一次"一键 Pull 更新"任务：串行同步多个仓库，交互通过回调完成。</summary>
     internal sealed class GitSyncer
     {
+        private sealed class PendingStash
+        {
+            public PendingStash() { }
+            public string Head = "", StashCommit = "", StashTag = "";
+        }
+
+        private sealed class PendingSync
+        {
+            public PendingSync() { }
+            public string Branch = "", Head = "", Target = "", StashCommit = "", StashTag = "";
+            public string UntrackedBackupDirectory = "";
+            public int UntrackedBackedUp;
+            public bool RestoreStarted;
+            // 保留第一份 stash 的旧格式字段，兼容已安装版本留下的恢复记录。
+            public List<PendingStash> AdditionalStashes = new List<PendingStash>();
+
+            public List<PendingStash> SavedStashes() => new[] {
+                new PendingStash { Head = Head, StashCommit = StashCommit, StashTag = StashTag }
+            }.Concat(AdditionalStashes ?? new List<PendingStash>()).ToList();
+        }
         /// <summary>日志输出（追加到进度窗口）。</summary>
         public Action<string> Log;
 
@@ -119,7 +143,7 @@ namespace TortoiseGitMonitor
         {
             try
             {
-                Directory.CreateDirectory(AppConfig.ConfigDir);
+                Directory.CreateDirectory(Path.GetDirectoryName(_logFile));
                 File.AppendAllText(_logFile, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}\n", new UTF8Encoding(false));
             }
             catch (Exception)
@@ -139,7 +163,9 @@ namespace TortoiseGitMonitor
         private ProcessResult RunWrite(string cwd, string action, params string[] args)
         {
             CheckStop();
-            ProcessResult res = GitProcess.Write(cwd, action, Log, ForceCancellation, 0, args);
+            ProcessResult res = GitProcess.Write(cwd, action,
+                msg => { Log(msg); FileLog(msg + " (cwd=" + cwd + ")"); },
+                ForceCancellation, 0, () => StopRequested, args);
             FileLog($"{action}: git {string.Join(" ", args)} -> rc={res.Code}, cancelled={res.Cancelled} (cwd={cwd})");
             if (!res.Ok)
             {
@@ -223,6 +249,211 @@ namespace TortoiseGitMonitor
             return res.Stdout.Trim();
         }
 
+        private string RecoveryFile(string path) => Path.GetFullPath(Path.Combine(path,
+            RequiredRead(path, "rev-parse", "--git-path", "monitor-sync-pending.json").Stdout.Trim()));
+
+        private void SavePending(string file, PendingSync pending)
+        {
+            string temporary = file + ".tmp-" + Guid.NewGuid().ToString("N");
+            File.WriteAllText(temporary, Json.Serialize(pending), new UTF8Encoding(false));
+            try
+            {
+                if (File.Exists(file)) File.Replace(temporary, file, null);
+                else File.Move(temporary, file);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
+        private PendingSync LoadPending(string path, string file, SyncRepoResult result)
+        {
+            if (!File.Exists(file)) return null;
+            if (new FileInfo(file).Length > 65536) throw new IOException("同步恢复记录异常，停止自动恢复: " + file);
+            PendingSync pending = Json.Deserialize<PendingSync>(File.ReadAllText(file, Encoding.UTF8));
+            if (pending == null || pending.Branch != result.Branch ||
+                !IsCommitId(pending.Target) || (pending.AdditionalStashes != null && pending.AdditionalStashes.Count > 63))
+                throw new IOException("同步恢复记录与当前仓库/分支不符，保留现场: " + file);
+            List<PendingStash> saved = pending.SavedStashes();
+            string prefix = "git-sync:" + result.Repo + ":";
+            foreach (PendingStash stash in saved)
+            {
+                Guid tagId;
+                if (stash == null || !IsCommitId(stash.StashCommit) || !IsCommitId(stash.Head) ||
+                    string.IsNullOrEmpty(stash.StashTag) || !stash.StashTag.StartsWith(prefix, StringComparison.Ordinal) ||
+                    !Guid.TryParseExact(stash.StashTag.Substring(prefix.Length), "N", out tagId))
+                    throw new IOException("同步恢复记录中的 stash 信息异常，保留现场: " + file);
+            }
+            if (saved.Select(s => s.StashCommit).Distinct(StringComparer.Ordinal).Count() != saved.Count)
+                throw new IOException("同步恢复记录包含重复 stash，停止自动恢复: " + file);
+            result.StashCommit = pending.StashCommit;
+            result.StashCommits = saved.Select(s => s.StashCommit).ToList();
+            result.UntrackedBackupDirectory = pending.UntrackedBackupDirectory ?? "";
+            result.UntrackedBackedUp = pending.UntrackedBackedUp;
+            if (pending.RestoreStarted)
+                throw new IOException("上次 stash 恢复已启动但未确认完成，不重复恢复；请检查 git status / git stash list: " + file);
+            CheckStashStack(path, pending);
+            foreach (PendingStash stash in saved)
+            {
+                string subject = RequiredRead(path, "show", "-s", "--format=%s", stash.StashCommit).Stdout.Trim();
+                string parent = RequiredRead(path, "rev-parse", "--verify", stash.StashCommit + "^1").Stdout.Trim();
+                if (!subject.EndsWith(": " + stash.StashTag, StringComparison.Ordinal) || parent != stash.Head ||
+                    !Run(path, 30, "merge-base", "--is-ancestor", stash.Head, "HEAD").Ok)
+                    throw new IOException("上次 stash 的来源与当前 HEAD 不符，停止自动恢复");
+            }
+            result.ResumedStash = true;
+            Log("▶ 继续上次未完成的同步，保留 stash: " + string.Join(", ", result.StashCommits));
+            return pending;
+        }
+
+        private static bool IsCommitId(string value) => value != null && (value.Length == 40 || value.Length == 64) && value.All(Uri.IsHexDigit);
+
+        private void CheckStashStack(string path, PendingSync pending)
+        {
+            string[] expected = pending.SavedStashes().Select(s => s.StashCommit).Reverse().ToArray();
+            string[] actual = RequiredRead(path, "stash", "list", "-" + expected.Length, "--format=%H").Stdout
+                .Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+            if (!actual.SequenceEqual(expected))
+                throw new IOException("stash 栈已发生变化，保留所有记录，不自动恢复或删除其他改动");
+        }
+
+        private PendingSync StashTracked(string path, string recovery, PendingSync pending, SyncRepoResult result)
+        {
+            if (pending != null)
+            {
+                CheckStashStack(path, pending);
+                if (pending.SavedStashes().Count >= 64) throw new IOException("待恢复 stash 数量过多，保留改动并停止同步");
+            }
+            string head = RequiredRead(path, "rev-parse", "HEAD").Stdout.Trim();
+            if (RequiredRead(path, "branch", "--show-current").Stdout.Trim() != result.Branch)
+                throw new IOException("分支在同步期间改变，保留改动并停止同步");
+            string before = StashHead(path);
+            string tag = "git-sync:" + result.Repo + ":" + Guid.NewGuid().ToString("N");
+            Log(pending == null ? "▶ stash 本地改动（仅 tracked）..." : "▶ 单独 stash 新增本地改动（仅 tracked，保留此前记录）...");
+            RunWrite(path, "stash-push", "stash", "push", "-m", tag);
+            string commit = StashHead(path);
+            if (commit.Length == 0 || commit == before)
+                throw new IOException("stash 未生成新的记录，停止同步");
+            string subject = RequiredRead(path, "show", "-s", "--format=%s", commit).Stdout.Trim();
+            string parent = RequiredRead(path, "rev-parse", "--verify", commit + "^1").Stdout.Trim();
+            if (!subject.EndsWith(": " + tag, StringComparison.Ordinal) || parent != head)
+                throw new IOException("新 stash 的标记或来源不符，保留现场并停止同步");
+            if (pending == null)
+                pending = new PendingSync { Branch = result.Branch, Head = head, Target = result.Target, StashCommit = commit,
+                    StashTag = tag, UntrackedBackupDirectory = result.UntrackedBackupDirectory, UntrackedBackedUp = result.UntrackedBackedUp };
+            else
+            {
+                if (pending.AdditionalStashes == null) pending.AdditionalStashes = new List<PendingStash>();
+                pending.AdditionalStashes.Add(new PendingStash { Head = head, StashCommit = commit, StashTag = tag });
+            }
+            result.StashCommit = pending.StashCommit;
+            result.StashCommits = pending.SavedStashes().Select(s => s.StashCommit).ToList();
+            SavePending(recovery, pending);
+            Log("  已保存 stash: " + commit);
+            CheckStashStack(path, pending);
+            ParseStatus(RequiredRead(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").Stdout, result);
+            if (result.Staged + result.Unstaged + result.Unmerged > 0)
+                throw new IOException("stash 后仍有 tracked 改动或冲突，停止同步");
+            if (RequiredRead(path, "rev-parse", "HEAD").Stdout.Trim() != head)
+                throw new IOException("HEAD 在保存改动期间改变，保留 stash 并停止同步");
+            return pending;
+        }
+
+        private void RestoreStash(string path, string recovery, PendingSync pending, SyncRepoResult result)
+        {
+            CheckStop();
+            if (InProgress(path) != null || UnmergedFiles(path).Count > 0)
+                throw new IOException("仓库仍在合并或存在冲突，停止同步");
+            if (pending == null) return;
+            var current = new SyncRepoResult();
+            ParseStatus(RequiredRead(path, "status", "--porcelain=v1", "-z", "--untracked-files=no").Stdout, current);
+            if (current.Unmerged > 0) throw new IOException("恢复 stash 前存在冲突，保留 stash 并停止");
+            if (current.Staged + current.Unstaged > 0)
+                pending = StashTracked(path, recovery, pending, result);
+            CheckStashStack(path, pending);
+            pending.RestoreStarted = true;
+            SavePending(recovery, pending); // 取消/冲突/崩溃后不得重复 pop 已部分应用的 stash。
+            result.StashPop = "failed";
+            List<PendingStash> saved = pending.SavedStashes();
+            if (saved.Count == 1)
+            {
+                Log("▶ pop stash（恢复原有暂存状态）...");
+                RunWrite(path, "stash-pop", "stash", "pop", "--index", "stash@{0}");
+            }
+            else
+            {
+                for (int i = 0; i < saved.Count; i++)
+                {
+                    CheckStashStack(path, pending);
+                    Log($"▶ 恢复第 {i + 1}/{saved.Count} 批本地改动（旧到新，保留暂存状态）: {saved[i].StashCommit}");
+                    // 使用固定提交 ID；全部 apply 成功前保留每一份原始 stash。
+                    if (i == 0) RunWrite(path, "stash-apply", "stash", "apply", "--index", saved[i].StashCommit);
+                    else RestoreAdditionalStash(path, recovery, saved[i]);
+                    if (UnmergedFiles(path).Count > 0) throw new IOException("恢复产生冲突，保留所有 stash 并停止");
+                }
+                foreach (PendingStash stash in saved.AsEnumerable().Reverse())
+                {
+                    if (StashHead(path) != stash.StashCommit)
+                        throw new IOException("恢复后 stash 栈改变，不删除其他改动");
+                    RunWrite(path, "stash-drop", "stash", "drop", "stash@{0}");
+                }
+            }
+            result.StashPop = "ok";
+            File.Delete(recovery);
+        }
+
+        private void RestoreAdditionalStash(string path, string recovery, PendingStash stash)
+        {
+            string prefix = Path.Combine(Path.GetDirectoryName(recovery), "monitor-replay-" + Guid.NewGuid().ToString("N"));
+            string worktree = prefix + "-w.patch", index = prefix + "-i.patch";
+            try
+            {
+                // --output 由 Git 直接写原始字节，保留二进制及非 UTF-8 文件；禁用外部 diff/textconv。
+                RunWrite(path, "stash-worktree-patch", "diff", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv",
+                    "--output=" + worktree, stash.Head, stash.StashCommit, "--");
+                RunWrite(path, "stash-index-patch", "diff", "--binary", "--full-index", "--no-renames", "--no-ext-diff", "--no-textconv",
+                    "--output=" + index, stash.Head, stash.StashCommit + "^2", "--");
+                // 先检查两份补丁，再按各自范围恢复；不重置此前批次的 index。
+                // apply 无法合并时直接停止，原始 stash 全部保留，禁止覆盖工作区。
+                bool hasWorktree = new FileInfo(worktree).Length > 0, hasIndex = new FileInfo(index).Length > 0;
+                if (hasWorktree) RunWrite(path, "stash-worktree-check", "apply", "--check", worktree);
+                if (hasIndex) RunWrite(path, "stash-index-check", "apply", "--cached", "--check", index);
+                if (hasWorktree) RunWrite(path, "stash-worktree-apply", "apply", worktree);
+                if (hasIndex) RunWrite(path, "stash-index-apply", "apply", "--cached", index);
+            }
+            finally
+            {
+                // 这里只删除本次生成的两份临时补丁；原始内容仍在准确 stash 提交中。
+                try { if (File.Exists(worktree)) File.Delete(worktree); } catch (IOException) { }
+                try { if (File.Exists(index)) File.Delete(index); } catch (IOException) { }
+            }
+        }
+
+        private void BackupUntracked(string path, string status, SyncRepoResult result)
+        {
+            CheckStop();
+            var untracked = status.Split('\0').Where(r => r.StartsWith("?? ", StringComparison.Ordinal)).Select(r => r.Substring(3)).ToList();
+            if (untracked.Count == 0) return;
+            string added = RequiredRead(path, "diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", result.Head, result.Target).Stdout;
+            List<string> blockers = UntrackedBackup.Find(untracked, added.Split('\0').Where(f => f.Length > 0));
+            if (blockers.Count == 0) return;
+            // 重新确认文件仍未跟踪，防止把其他操作刚加入暂存区的文件移走。
+            for (int i = 0; i < blockers.Count; i += 64)
+            {
+                string[] args = new[] { "--literal-pathspecs", "ls-files", "--cached", "-z", "--" }.Concat(blockers.Skip(i).Take(64)).ToArray();
+                if (RequiredRead(path, args).Stdout.Length > 0)
+                    throw new IOException("阻塞文件已被其他操作加入跟踪，停止自动备份");
+            }
+            if (RequiredRead(path, "rev-parse", "HEAD").Stdout.Trim() != result.Head)
+                throw new IOException("HEAD 在备份前发生变化，停止自动合并");
+            string gitDir = RequiredRead(path, "rev-parse", "--absolute-git-dir").Stdout.Trim();
+            string directory = Path.Combine(gitDir, "monitor-untracked-backup", DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
+            result.UntrackedBackupDirectory = directory;
+            Log($"▶ 自动备份 {blockers.Count} 个未跟踪阻塞文件: {directory}");
+            UntrackedBackup.Move(path, gitDir, directory, blockers, CheckStop,
+                message => { Log(message); FileLog(message + " (cwd=" + path + ")"); },
+                Json.Serialize(new { branch = result.Branch, head = result.Head, target = result.Target, files = blockers }));
+            result.UntrackedBackedUp = blockers.Count;
+        }
+
         public SyncRepoResult SyncRepo(string path)
         {
             var result = new SyncRepoResult { Repo = Path.GetFileName(path.TrimEnd('\\', '/')) };
@@ -268,8 +499,10 @@ namespace TortoiseGitMonitor
                 if (result.Status != "ok" && result.Status != "skipped")
                 {
                     result.Reason += "\n已停止本仓库后续写入，不再执行 stash pop。请检查 git status 和 git stash list 后手动恢复。";
-                    if (result.StashCommit.Length > 0)
-                        result.Reason += "\n本次保存的 stash 提交: " + result.StashCommit + "（恢复成功后可能已弹出；以 stash list 为准）。";
+                    if (result.StashCommits.Count > 0)
+                        result.Reason += "\n待恢复记录中的 stash 提交（旧到新）: " + string.Join(", ", result.StashCommits) + "（以 stash list 为准）。";
+                    if (result.UntrackedBackupDirectory.Length > 0)
+                        result.Reason += "\n未跟踪文件备份目录: " + result.UntrackedBackupDirectory;
                     Log("✗ " + result.Reason);
                 }
                 // 终止后的摘要只能只读；不得把读失败当成干净工作区。
@@ -325,6 +558,11 @@ namespace TortoiseGitMonitor
             }
             result.Branch = RequiredRead(path, "branch", "--show-current").Stdout.Trim();
             if (result.Branch.Length == 0) throw new IOException("detached HEAD，停止同步");
+            string recovery = RecoveryFile(path);
+            PendingSync pending = LoadPending(path, recovery, result);
+            string status = RequiredRead(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").Stdout;
+            ParseStatus(status, result);
+            if (result.Unmerged > 0) throw new IOException("存在未解决冲突，停止同步");
 
             Log("▶ fetch --all --prune ...（持续等待，每 15 秒报告状态）");
             RunWrite(path, "fetch", "fetch", "--all", "--prune");
@@ -334,28 +572,25 @@ namespace TortoiseGitMonitor
             Tuple<int, int> div = Divergence(path, result.Target);
             result.Ahead = div.Item1;
             result.Behind = div.Item2;
+            result.Head = RequiredRead(path, "rev-parse", "HEAD").Stdout.Trim();
+            status = RequiredRead(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").Stdout;
+            ParseStatus(status, result);
+            if (result.Unmerged > 0) throw new IOException("存在未解决冲突，停止同步");
+            if (result.Behind > 0 && result.Ahead == 0) BackupUntracked(path, status, result);
+            if (pending != null && result.UntrackedBackupDirectory.Length > 0)
+            {
+                pending.UntrackedBackupDirectory = result.UntrackedBackupDirectory;
+                pending.UntrackedBackedUp = result.UntrackedBackedUp;
+                SavePending(recovery, pending);
+            }
+            if (result.Staged + result.Unstaged > 0 && (pending != null || result.Behind > 0))
+                pending = StashTracked(path, recovery, pending, result);
             if (result.Behind == 0)
             {
                 result.Merge = result.Ahead == 0 ? "up_to_date" : "ahead_only";
                 Log(result.Ahead == 0 ? "• 已是最新，无需合并" : $"• 领先 {result.Ahead} 个提交，无需 pull");
-                return; // 无需合并时不折腾本地 stash
-            }
-
-            ParseStatus(RequiredRead(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").Stdout, result);
-            if (result.Unmerged > 0) throw new IOException("存在未解决冲突，停止同步");
-            if (result.Staged + result.Unstaged > 0)
-            {
-                string before = StashHead(path);
-                string tag = "git-sync:" + result.Repo + ":" + Guid.NewGuid().ToString("N");
-                Log("▶ stash 本地改动（仅 tracked）...");
-                RunWrite(path, "stash-push", "stash", "push", "-m", tag);
-                result.StashCommit = StashHead(path);
-                if (result.StashCommit.Length == 0 || result.StashCommit == before)
-                    throw new IOException("stash 未生成新的记录，停止同步");
-                Log("  已保存 stash: " + result.StashCommit);
-                ParseStatus(RequiredRead(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").Stdout, result);
-                if (result.Staged + result.Unstaged + result.Unmerged > 0)
-                    throw new IOException("stash 后仍有 tracked 改动或冲突，停止同步");
+                RestoreStash(path, recovery, pending, result);
+                return; // 没有恢复记录时，不折腾用户已有的 stash。
             }
             CheckStop();
             if (result.Ahead == 0)
@@ -382,17 +617,7 @@ namespace TortoiseGitMonitor
                 }
             }
             CheckStop();
-            if (InProgress(path) != null || UnmergedFiles(path).Count > 0)
-                throw new IOException("仓库仍在合并或存在冲突，停止同步");
-            if (result.StashCommit.Length > 0)
-            {
-                if (StashHead(path) != result.StashCommit)
-                    throw new IOException("stash 栈已发生变化，不自动弹出其他改动；请使用记录的 stash 提交手动恢复");
-                result.StashPop = "failed";
-                Log("▶ pop stash（恢复原有暂存状态）...");
-                RunWrite(path, "stash-pop", "stash", "pop", "--index", "stash@{0}");
-                result.StashPop = "ok";
-            }
+            RestoreStash(path, recovery, pending, result);
             CheckStop();
         }
 

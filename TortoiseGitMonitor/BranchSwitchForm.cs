@@ -68,7 +68,7 @@ namespace TortoiseGitMonitor
         {
             try
             {
-                Directory.CreateDirectory(AppConfig.ConfigDir);
+                Directory.CreateDirectory(Path.GetDirectoryName(_logFile));
                 File.AppendAllText(_logFile, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}\n", new UTF8Encoding(false));
             }
             catch (Exception)
@@ -85,7 +85,8 @@ namespace TortoiseGitMonitor
         /// <summary>执行写操作并记审计日志。</summary>
         private ProcessResult RunWrite(string cwd, string action, params string[] args)
         {
-            ProcessResult res = GitProcess.Write(cwd, action, Log, CancellationToken.None, 0, args);
+            ProcessResult res = GitProcess.Write(cwd, action,
+                msg => { Log(msg); FileLog(msg + " (cwd=" + cwd + ")"); }, CancellationToken.None, 0, args);
             FileLog($"{action}: git {string.Join(" ", args)} -> rc={res.Code} (cwd={cwd})");
             // checkout 的明确未跟踪文件阻塞允许用户选择备份重试，其他写入失败立即停止。
             bool blockers = action.StartsWith("checkout") && res.Stderr.Contains("would be overwritten by checkout");

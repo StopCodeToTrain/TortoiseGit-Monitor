@@ -189,15 +189,36 @@ namespace TortoiseGitMonitor
 
         private static string FindExecutable(string file)
         {
-            if (Path.IsPathRooted(file)) return file;
+            if (Path.IsPathRooted(file)) return PreferDirectGit(file);
             string name = Path.HasExtension(file) ? file : file + ".exe";
             foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
             {
                 if (string.IsNullOrWhiteSpace(dir)) continue;
                 string candidate = Path.Combine(dir.Trim().Trim('"'), name);
-                if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+                if (File.Exists(candidate)) return PreferDirectGit(Path.GetFullPath(candidate));
             }
             throw new FileNotFoundException("找不到 " + file + "，请确认已安装且在 PATH 中");
+        }
+
+        /// <summary>在同一套 Git for Windows 中直接启动实际 Git；不改变安装选择，也不修改监控策略。</summary>
+        private static string PreferDirectGit(string executable)
+        {
+            if (!string.Equals(Path.GetFileName(executable), "git.exe", StringComparison.OrdinalIgnoreCase))
+                return executable;
+            string directory = Path.GetDirectoryName(executable);
+            string leaf = Path.GetFileName(directory);
+            if (!string.Equals(leaf, "bin", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(leaf, "cmd", StringComparison.OrdinalIgnoreCase))
+                return executable;
+            string root = Path.GetDirectoryName(directory);
+            if (string.IsNullOrEmpty(root)) return executable;
+            foreach (string runtime in new[] { "mingw64", "mingw32" })
+            {
+                string candidate = Path.Combine(root, runtime, "bin", "git.exe");
+                if (File.Exists(candidate)) return candidate;
+            }
+            // 独立 shim、Cygwin/MSYS2 或旧布局没有该文件时，继续使用原来的可执行文件。
+            return executable;
         }
 
         private static void Check(bool ok)

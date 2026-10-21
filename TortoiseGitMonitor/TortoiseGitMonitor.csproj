@@ -45,6 +45,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="App.config" />
     <Compile Include="Program.cs" />
     <Compile Include="AppConfig.cs" />
     <Compile Include="BranchSwitchForm.cs" />
@@ -55,6 +56,8 @@
     <Compile Include="ProcessUtil.cs" />
     <Compile Include="ProcessRunner.cs" />
     <Compile Include="GitProcess.cs" />
+    <Compile Include="IndexLockPolicy.cs" />
+    <Compile Include="UntrackedBackup.cs" />
     <Compile Include="TrayAppContext.cs" />
     <Compile Include="SettingsForm.cs" />
     <Compile Include="SyncForm.cs" />

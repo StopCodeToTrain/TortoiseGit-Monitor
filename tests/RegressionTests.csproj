@@ -7,6 +7,7 @@
     <CodePage>65001</CodePage>
     <StartupObject>TortoiseGitMonitor.RegressionTests</StartupObject>
     <AssemblyName>RegressionTests</AssemblyName>
+    <AppConfig>..\TortoiseGitMonitor\App.config</AppConfig>
     <OutputPath>..\TortoiseGitMonitor\obj\RegressionTests\</OutputPath>
     <IntermediateOutputPath>..\TortoiseGitMonitor\obj\RegressionTestsBuild\</IntermediateOutputPath>
     <FrameworkPathOverride>$(WINDIR)\Microsoft.NET\Framework64\v4.0.30319</FrameworkPathOverride>

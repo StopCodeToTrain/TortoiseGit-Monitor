@@ -2,14 +2,20 @@
 
 Windows 系统托盘应用，定时检测本地 Git 仓库状态，支持 TortoiseGit 快捷操作。
 
-C# / WinForms 实现，目标框架 .NET Framework 4.8（Windows 10/11 系统自带，无需安装任何运行时），单文件 exe 仅几十 KB。
+C# / WinForms 实现，目标框架 .NET Framework 4.8。发布文件为 exe 和配套的运行时配置文件。
+
+**[下载 v1.0.0](https://github.com/StopCodeToTrain/TortoiseGit-Monitor/releases/tag/v1.0.0)** · [安装、升级与已知限制](docs/INSTALL.md) · [更新记录](CHANGELOG.md)
+
+下载 Windows ZIP 后完整解压，将 `TortoiseGitMonitor.exe` 与 `.exe.config` 放在一起，双击 exe，再从系统托盘的“设置”添加扫描目录。需要 Git（在 PATH 中）和 .NET Framework 4.8；较早的 Windows 10 版本可能需要单独安装运行时。
 
 ## 功能
 
 - **自动 fetch** — 按设定的时间间隔自动 `git fetch --prune`，及时感知远程变更
 - **一键 Pull 更新** — 托盘菜单一键同步所有仓库：自动 stash 本地改动 → merge → 校验 → pop stash；写入失败立即停止并保留现场，不自动 commit/push
+- **未跟踪阻塞文件自动备份** — 快进前识别将被目标提交覆盖的未跟踪文件，逐文件移到 Git 元数据备份目录；保留本地原文，工作区采用远端版本，其他未跟踪文件保留原位
+- **失败后自动续处理** — 重试时单独保存新增 tracked 改动，保留此前 stash 记录；同步后按旧到新恢复各批改动及暂存状态，全部恢复成功才清理相应 stash
 - **全部切换分支** — 将所有仓库批量切换到指定分支：本地有直接切换，没有则基于 origin 同名分支创建并跟踪；脏工作区可 stash 后切换再恢复
-- **冲突保留** — merge 或 stash pop 产生冲突时立即停止后续写入，保留现场供人工检查；本次同步不继续调用冲突解决器
+- **冲突保留** — merge 或 stash 恢复产生冲突时立即停止后续写入，保留现场供人工检查；本次同步不继续调用冲突解决器
 - **状态指示** — 托盘图标用不同颜色标识仓库整体状态（绿/黄/红/灰）
 - **右键菜单** — 点击托盘直接查看所有仓库状态，单击打开 TortoiseGit Show Log
 - **仓库发现** — 配置扫描目录，自动递归搜索 Git 仓库（最多 3 层）
@@ -18,6 +24,12 @@ C# / WinForms 实现，目标框架 .NET Framework 4.8（Windows 10/11 系统自
 - **开机自启** — 设置中一键开启/关闭（注册表 Run 键，仅当前用户）
 
 ## 界面
+
+以下为 v1.0.0 实际运行窗口，使用隔离演示仓库和示例路径：
+
+![设置窗口](docs/screenshots/settings.png)
+
+![一键 Pull 日志与摘要](docs/screenshots/sync.png)
 
 ```
   ▲  上翻（20 个）              ← 超过 20 个仓库时分页
@@ -46,7 +58,7 @@ C# / WinForms 实现，目标框架 .NET Framework 4.8（Windows 10/11 系统自
 | TortoiseGit 程序路径 | 指定 TortoiseGitProc.exe，留空自动查找 |
 | 后置脚本 | 全部切换分支完成后依次执行的脚本列表（如 dbfs 同步），留空不执行 |
 | 扫描目录 | 在这些目录下递归搜索 Git 仓库 |
-| LLM 服务商 | anthropic / openai（一键 Pull 更新的冲突合并用） |
+| LLM 服务商 | anthropic / openai（兼容旧版；本版本同步遇冲突停止，不自动调用） |
 | LLM API Key | 留空则读环境变量 `GIT_SYNC_LLM_KEY` |
 | LLM Base URL | 可选，代理 / 自部署 / OpenAI 兼容服务（如 DeepSeek） |
 | LLM 模型 | 模型名（如 claude-sonnet-5、gpt-4o） |
@@ -59,17 +71,27 @@ C# / WinForms 实现，目标框架 .NET Framework 4.8（Windows 10/11 系统自
 
 1. **预检** — 检测到 merge/rebase 进行中状态时先弹窗询问，绝不贸然操作
 2. **fetch** — `git fetch --all --prune`
-3. **stash** — 有本地改动时自动 stash（仅 tracked 文件）
-4. **合并** — 已最新/仅领先则不产生 stash；落后则快进到本次 fetch 后记录的目标提交；分叉合并使用 `--no-commit --no-ff`，等待手动提交
-5. **校验与失败处理** — 等整个 Git 进程树退出，校验 HEAD、固定目标、当前远端与 ahead/behind；任何写操作失败、取消或冲突都立即停止该仓库后续写入，不再自动解决冲突或 pop stash。命令异常但目标实际已到达时会明确说明，仍停止后续写入
-6. **pop stash** — 仅在合并和校验成功、没有进行中状态时恢复本次 stash；用 `--index` 恢复原有暂存状态，stash 栈被其他操作改变时停止。pop 失败保留现场并提示恢复
-7. **摘要** — **不自动 commit、不 push**；分别显示 staged、unstaged、untracked 和未合并文件数，检查失败显示状态未知
+3. **未跟踪预检** — 快进前比较 HEAD/目标新增路径与未跟踪文件，通过 NUL 分隔的 Git 输出识别阻塞文件，无需解析或重试失败的 merge。仅移动阻塞的普通文件，支持文件与目录的类型冲突；拒绝越界路径、链接及嵌套仓库目录。备份位于工作区之外的 Git 元数据目录 `monitor-untracked-backup/<时间与唯一ID>/files/`，保留原目录结构，并写入 `manifest.json`。移动未完成时尝试还原已移动文件；无法还原的备份位置会明确记录，停止后续操作。
+4. **stash** — 有本地改动时自动 stash（仅 tracked 文件），将准确提交 ID、唯一标记、分支、原 HEAD 和备份位置持久化到 Git 元数据中的 `monitor-sync-pending.json`。有上次未恢复的 stash 时，将新增改动单独保存并追加记录，保留全部批次；兼容此前单份 stash 的恢复记录。
+5. **合并** — 已最新/仅领先且没有恢复记录时不产生 stash；落后则快进到本次 fetch 后记录的目标提交；分叉合并使用 `--no-commit --no-ff`，等待手动提交。
+6. **校验与失败处理** — 等整个 Git 进程树退出，校验 HEAD、固定目标、当前远端与 ahead/behind；任何写操作失败、取消或冲突都立即停止该仓库后续写入，不再自动解决冲突或 pop stash。命令异常但目标实际已到达时会明确说明，仍停止后续写入。
+7. **恢复 stash 与续处理** — 失败后再次同步或重启，会核对记录中每份 stash 的精确提交、标记、来源、栈顺序和当前分支，并继续此前任务；即使 HEAD 已快进到目标，也会恢复记录中的改动。fetch/merge 期间新增 tracked 改动会在恢复前单独保存。单份 stash 使用 `pop --index`；多份按旧到新恢复，第一批使用固定提交 ID 执行 `apply --index`，后续批次分别检查并应用工作区与暂存区的原始字节补丁，避免重置此前批次的 index。全部成功后才删除对应 stash 并移除恢复记录。普通用户 stash 不自动恢复或删除。stash 栈变动、改动无法合并或此前已经开始但未确认完成的恢复均停止，保留现场，避免覆盖或重复应用。
+8. **摘要** — **不自动 commit、不 push**；显示备份文件数和完整备份目录，分别显示 staged、unstaged、untracked 和未合并文件数，检查失败显示状态未知。
 
 同步和分支切换的 Git 写命令持续等待，每 15 秒显示运行时间，不再按 60 秒误判失败。一键 Pull 更新窗口提供“安全停止”（等当前命令完成后停止）和“强制停止”（二次确认后终止整个进程树并等待退出）。关闭运行中的同步窗口会请求安全停止；任务结束前不能从托盘退出应用。
 
-所有受超时控制的外部命令使用 Windows Job Object 管理完整进程树，进程创建时即加入 Job。后台 fetch 保留 30 秒预算，超时后终止整个进程树并确认退出；只读 Git 调用禁用可选写锁。写操作前后检查 `git rev-parse --git-path index.lock`（支持 worktree），发现活动锁或残留锁就停止，**绝不自动删除锁**。同一仓库的后台检测、同步和分支切换互斥。
+所有受超时控制的外部命令使用 Windows Job Object 管理完整进程树，进程创建时即加入 Job。后台 fetch 保留 30 秒预算，超时后终止整个进程树并确认退出；Git 调用禁用可选写锁。
 
-停止后先检查 `git status`、`git stash list` 和摘要中的 stash 提交。可能存在部分工作区改动；确认没有其他 Git 操作、处理冲突/合并状态及残留锁后，再选择对应 stash 恢复，不要盲目重复 pop。
+写操作前后通过 `git rev-parse --git-path index.lock` 定位正确的锁（支持 worktree），采用以下策略：
+
+- **手动同步/切换分支**：遇锁先等最多 30 秒，每 5 秒报告进度；锁自行消失后继续。
+- **自动清理失效锁**：等待期间，只有锁的创建时间和修改时间均超过 2 分钟、连续观察至少 2 秒且文件身份/大小/时间一直保持不变、可独占访问，并且检测不到 `git`、`git-*` 或 `TortoiseGitProc` 进程时，才直接删除 `index.lock`，不备份、不弹窗。删除通过独占文件句柄完成，并重新检查文件身份，避免误删被替换的新锁。进程检查覆盖其他仓库，短暂 Git 活动在 30 秒窗口内继续等待，超时仍存在活动进程或无法确认状态时保留锁并停止。
+- **后台检测**：遇锁立即跳过 fetch，继续只读状态检查，不等待、不清理锁。
+- **失败或取消**：不重试已经失败的写命令，不清理写入后发现的锁，仍停止后续写入并保留 stash；锁等待也响应安全停止和强制停止。
+
+同一 Git 公共目录的后台检测、同步和分支切换通过进程内信号量和同一登录会话的命名互斥量串行执行；仓库子目录和共享 refs 的 worktree 使用同一个互斥键，多个 Monitor 实例也不能交叉写入。外部 Git/TortoiseGit 操作仍通过 Git 自身锁协调。
+
+停止后先检查 `git status`、`git stash list` 和摘要中的 stash 提交。可能存在部分工作区改动；确认没有其他 Git 操作并处理冲突/合并状态后，再选择对应 stash 恢复，不要盲目重复 pop。下一次手动任务会按上述条件检查旧锁。
 
 所有 git 写操作记录到 `%USERPROFILE%\.config\tortoisegit_monitor\git_sync.log`，可审计。
 
@@ -94,7 +116,7 @@ C# / WinForms 实现，目标框架 .NET Framework 4.8（Windows 10/11 系统自
 MSBuild TortoiseGitMonitor\TortoiseGitMonitor.csproj /p:Configuration=Release
 ```
 
-产物：`TortoiseGitMonitor\bin\Release\TortoiseGitMonitor.exe`，可直接拷贝到任意位置运行。
+产物：`TortoiseGitMonitor\bin\Release\TortoiseGitMonitor.exe` 及 `TortoiseGitMonitor.exe.config`，两者一起拷贝到运行目录。配置与 Windows 扩展路径用于支持长备份路径，不修改系统注册表。
 
 ## 验证
 
@@ -109,7 +131,7 @@ TortoiseGitMonitor\obj\RegressionTests\RegressionTests.exe
 
 ## 依赖
 
-- Windows 10 / 11（自带 .NET Framework 4.8）
+- Windows 10 / 11 与 .NET Framework 4.8（较早的 Windows 10 可能需单独安装）
 - Git（需在 PATH 中）
 - [TortoiseGit](https://tortoisegit.org/)（可选，用于 `Show Log` 快捷操作）
 - Python（可选，仅在配置了 CSV 冲突解决脚本时需要）
@@ -132,6 +154,8 @@ tortoisegit-monitor/
     ├── GitWatcher.cs              # Git 操作（状态检测、并行 fetch）
     ├── ProcessRunner.cs          # Windows Job 进程树执行器
     ├── GitProcess.cs             # Git 锁检查与仓库操作互斥
+    ├── IndexLockPolicy.cs         # 锁等待、失效锁检查与直接清理
+    ├── UntrackedBackup.cs         # 快进阻塞文件匹配、安全备份与回滚
     ├── GitSyncer.cs               # 一键 Pull 更新（stash/merge/冲突解决，移植自 git-sync）
     ├── BranchSwitchForm.cs        # 全部切换分支（引擎 + 分支输入框 + 进度窗口）
     ├── LlmClient.cs               # LLM 调用（OpenAI / Anthropic 冲突合并）
@@ -143,4 +167,4 @@ tortoisegit-monitor/
 
 ## License
 
-MIT
+[MIT License](LICENSE) — Copyright (c) 2026 StopCodeToTrain and contributors.

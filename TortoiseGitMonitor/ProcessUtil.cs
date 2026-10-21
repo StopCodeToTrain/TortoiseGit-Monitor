@@ -1,11 +1,18 @@
 // 进程命令行工具：参数引号转义 + XML 转义。
 // 所有外部进程一律使用固定参数列表，绝不经过 shell，避免命令注入。
+using System;
 using System.Text;
 
 namespace TortoiseGitMonitor
 {
     internal static class ProcessUtil
     {
+        internal static void EnableLongPaths()
+        {
+            AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
+            AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
+        }
+
         /// <summary>
         /// 将单个参数转为 Windows 命令行安全形式（与 Python subprocess.list2cmdline 行为一致）。
         /// 仅当参数含空白或引号时才加引号；引号内的反斜杠和引号按规则转义。

@@ -11,14 +11,82 @@
  */
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace TortoiseGitMonitor
 {
+    /// <summary>统一显示并激活进度窗口，供首次打开和再次点击菜单使用。</summary>
+    internal static class ProgressWindow
+    {
+        private delegate bool EnumWindowCallback(IntPtr window, IntPtr parameter);
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr window, int command);
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindowAsync(IntPtr window, int command);
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowCallback callback, IntPtr parameter);
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr window, StringBuilder text, int maxCount);
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr window);
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr window);
+
+        internal static void ShowAndActivate(Form form)
+        {
+            form.Show();
+            if (form.WindowState == FormWindowState.Minimized)
+                form.WindowState = FormWindowState.Normal;
+            // 隐藏启动可能影响首次 ShowWindow；再次显式显示，不能仅依赖 Activate。
+            ShowWindow(form.Handle, 5); // SW_SHOW，保留正常/最大化窗口状态。
+            form.BringToFront();
+            form.Activate();
+        }
+
+        /// <summary>恢复旧实例已经隐藏的同步窗口；不重启程序，不启动或中断任何 Git 操作。</summary>
+        internal static string RestoreRunningWindow(int processId)
+        {
+            using (var process = Process.GetProcessById(processId))
+            {
+                if (!string.Equals(process.ProcessName, "TortoiseGitMonitor", StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("目标进程不是 TortoiseGitMonitor");
+                var candidates = new List<IntPtr>();
+                EnumWindows((window, parameter) =>
+                {
+                    uint owner;
+                    GetWindowThreadProcessId(window, out owner);
+                    if (owner != processId) return true;
+                    var title = new StringBuilder(256);
+                    GetWindowText(window, title, title.Capacity);
+                    if (title.ToString() == "一键 Pull 更新") candidates.Add(window);
+                    return true;
+                }, IntPtr.Zero);
+                if (candidates.Count != 1)
+                    throw new InvalidOperationException("需要恰好一个现有同步窗口，实际找到 " + candidates.Count);
+                IntPtr target = candidates[0];
+                uint targetOwner;
+                GetWindowThreadProcessId(target, out targetOwner);
+                if (targetOwner != processId || process.HasExited)
+                    throw new InvalidOperationException("目标进程或窗口已经变化");
+                bool wasVisible = IsWindowVisible(target);
+                ShowWindowAsync(target, 9); // SW_RESTORE，不依赖旧实例的 Activate 逻辑。
+                SetForegroundWindow(target);
+                for (int i = 0; i < 20 && !IsWindowVisible(target); i++) Thread.Sleep(50);
+                if (!IsWindowVisible(target)) throw new InvalidOperationException("窗口未能显示，未改动同步任务");
+                return "process_id=" + processId + "\nwas_visible=" + wasVisible + "\nis_visible=True\n";
+            }
+        }
+    }
+
     /// <summary>选项对话框：prompt + 一组选项按钮，返回 1-based 选项序号。</summary>
     internal sealed class AskDialog : Form
     {
@@ -203,13 +271,16 @@ namespace TortoiseGitMonitor
         /// <summary>打开进度窗口并开始同步（已有窗口则直接激活）。onComplete 在 UI 线程回调。</summary>
         public static void ShowFor(List<string> repos, Action onComplete)
         {
-            if (_instance != null && !_instance.IsDisposed)
-            {
-                _instance.Activate();
-                return;
-            }
+            if (TryActivateExisting()) return;
             _instance = new SyncForm(repos, onComplete);
-            _instance.Show();
+            ProgressWindow.ShowAndActivate(_instance);
+        }
+
+        internal static bool TryActivateExisting()
+        {
+            if (_instance == null || _instance.IsDisposed) return false;
+            ProgressWindow.ShowAndActivate(_instance);
+            return true;
         }
 
         protected override void OnShown(EventArgs e)
@@ -349,6 +420,8 @@ namespace TortoiseGitMonitor
                     AppendLog($"  [{r.Repo}] {r.Status}: {r.Reason}");
                 }
                 AppendLog($"  [{r.Repo}] merge={r.Merge} stash_pop={r.StashPop}");
+                if (r.UntrackedBackupDirectory.Length > 0)
+                    AppendLog($"    未跟踪阻塞文件已备份 {r.UntrackedBackedUp} 个: {r.UntrackedBackupDirectory}");
                 if (r.UnmergedRemaining.Count > 0)
                     AppendLog("    未解决: " + string.Join(", ", r.UnmergedRemaining));
                 if (r.StatusKnown)

@@ -4,6 +4,7 @@
  *
  * 附加参数:
  *   --selftest [输出文件]  仅加载配置并输出解析结果（用于验证配置兼容性），不启动托盘。
+ *   --restore-sync-window 进程ID 输出文件  恢复旧实例的隐藏进度窗口，不操作仓库。
  */
 using System;
 using System.IO;
@@ -17,6 +18,21 @@ namespace TortoiseGitMonitor
         [STAThread]
         private static int Main(string[] args)
         {
+            ProcessUtil.EnableLongPaths();
+            if (args.Length > 0 && args[0] == "--restore-sync-window")
+            {
+                if (args.Length != 3) return 2; // 参数错误不能意外启动另一个托盘实例。
+                try
+                {
+                    File.WriteAllText(args[2], ProgressWindow.RestoreRunningWindow(int.Parse(args[1])), new UTF8Encoding(false));
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    File.WriteAllText(args[2], "WINDOW_RECOVERY_FAIL: " + ex.Message, new UTF8Encoding(false));
+                    return 1;
+                }
+            }
             if (args.Length >= 1 && args[0] == "--selftest")
                 return RunSelfTest(args.Length > 1 ? args[1] : null);
 
