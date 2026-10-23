@@ -4,7 +4,7 @@ Windows 系统托盘应用，定时检测本地 Git 仓库状态，支持 Tortoi
 
 C# / WinForms 实现，目标框架 .NET Framework 4.8。发布文件为 exe 和配套的运行时配置文件。
 
-**[下载 v1.0.0](https://github.com/StopCodeToTrain/TortoiseGit-Monitor/releases/tag/v1.0.0)** · [安装、升级与已知限制](docs/INSTALL.md) · [更新记录](CHANGELOG.md)
+**[下载 v1.0.1](https://github.com/StopCodeToTrain/TortoiseGit-Monitor/releases/tag/v1.0.1)** · [安装、升级与已知限制](docs/INSTALL.md) · [更新记录](CHANGELOG.md)
 
 下载 Windows ZIP 后完整解压，将 `TortoiseGitMonitor.exe` 与 `.exe.config` 放在一起，双击 exe，再从系统托盘的“设置”添加扫描目录。需要 Git（在 PATH 中）和 .NET Framework 4.8；较早的 Windows 10 版本可能需要单独安装运行时。
 
@@ -85,7 +85,7 @@ C# / WinForms 实现，目标框架 .NET Framework 4.8。发布文件为 exe 和
 写操作前后通过 `git rev-parse --git-path index.lock` 定位正确的锁（支持 worktree），采用以下策略：
 
 - **手动同步/切换分支**：遇锁先等最多 30 秒，每 5 秒报告进度；锁自行消失后继续。
-- **自动清理失效锁**：等待期间，只有锁的创建时间和修改时间均超过 2 分钟、连续观察至少 2 秒且文件身份/大小/时间一直保持不变、可独占访问，并且检测不到 `git`、`git-*` 或 `TortoiseGitProc` 进程时，才直接删除 `index.lock`，不备份、不弹窗。删除通过独占文件句柄完成，并重新检查文件身份，避免误删被替换的新锁。进程检查覆盖其他仓库，短暂 Git 活动在 30 秒窗口内继续等待，超时仍存在活动进程或无法确认状态时保留锁并停止。
+- **自动清理失效锁**：等待期间，只有锁的创建时间和修改时间均超过 2 分钟、连续观察至少 2 秒且文件身份/大小/时间一直保持不变、可独占访问，并且检测不到 `git`、`git-*` 或可能持有该锁的 `TortoiseGitProc` 进程时，才直接删除 `index.lock`，不备份、不弹窗。若 TortoiseGit 进程启动时间明确晚于锁的创建和最后写入时间（均留 1 秒余量），不把它当作旧锁的持有者，避免新开的日志窗口阻塞旧锁清理；其他 TortoiseGit 进程或无法确认的状态仍拦截。日志窗口也能发起写操作，因此不只凭 `/command:log` 放行。删除通过独占文件句柄完成，并重新检查文件身份，避免误删被替换的新锁。进程检查覆盖其他仓库，短暂 Git 活动在 30 秒窗口内继续等待，超时仍存在活动进程或无法确认状态时保留锁并停止。
 - **后台检测**：遇锁立即跳过 fetch，继续只读状态检查，不等待、不清理锁。
 - **失败或取消**：不重试已经失败的写命令，不清理写入后发现的锁，仍停止后续写入并保留 stash；锁等待也响应安全停止和强制停止。
 

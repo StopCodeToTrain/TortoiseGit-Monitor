@@ -71,6 +71,15 @@ namespace TortoiseGitMonitor
                 Directory.CreateDirectory(shim);
                 File.Copy(Self, Path.Combine(shim, "git.exe"));
                 Environment.SetEnvironmentVariable("PATH", shim + ";" + Environment.GetEnvironmentVariable("PATH"));
+                if (args.Length > 0 && args[0] == "--lock-regression-only")
+                {
+                    TestIndexLockPolicy();
+                    TestTortoiseGitLockOwnership();
+                    TestRepositoryGate();
+                    TestStaleLockSync();
+                    Console.WriteLine($"锁策略回归通过: {Passed} 组检查");
+                    return 0;
+                }
                 if (!pendingOnly)
                 {
                     TestUntrackedFastForward();
@@ -96,6 +105,7 @@ namespace TortoiseGitMonitor
                     return 0;
                 }
                 TestIndexLockPolicy();
+                TestTortoiseGitLockOwnership();
                 TestRepositoryGate();
                 if (args.Length > 0 && args[0] == "--lock-policy-only")
                 {
@@ -669,8 +679,54 @@ namespace TortoiseGitMonitor
         private static void OldLock(string path)
         {
             Write(path, "fixture lock data");
-            File.SetCreationTimeUtc(path, DateTime.UtcNow.AddMinutes(-10));
-            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(-10));
+            // 模拟早于所有当前 GUI 进程的遗留文件，不要求关闭开发机上已打开的日志窗口。
+            DateTime old = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            File.SetCreationTimeUtc(path, old);
+            File.SetLastWriteTimeUtc(path, old);
+        }
+
+        private static void TestTortoiseGitLockOwnership()
+        {
+            DateTime now = DateTime.UtcNow;
+            DateTime old = now.AddHours(-2);
+            Assert(!IndexLockPolicy.TortoiseGitCouldOwnLock(now, old, old), "晚于锁两项时间的新进程不可能是原锁创建者");
+            Assert(IndexLockPolicy.TortoiseGitCouldOwnLock(old, now, now), "进程先于锁启动时仍拦截");
+            Assert(IndexLockPolicy.TortoiseGitCouldOwnLock(old, old.AddHours(-1), now), "创建时间继承旧值，但写入晚于进程时仍拦截");
+            Assert(IndexLockPolicy.TortoiseGitCouldOwnLock(old, now, old.AddHours(-1)), "任一文件时间晚于进程时仍拦截");
+            Assert(IndexLockPolicy.TortoiseGitCouldOwnLock(now, now.AddMilliseconds(-500), now.AddMilliseconds(-500)), "一秒时间余量内不误判");
+            Pass("TortoiseGit 持锁时间关系：旧进程、旧创建时间与近期写入、时间余量均保持保护");
+
+            string dir = Path.Combine(Root, "tortoise-log-lock");
+            Directory.CreateDirectory(dir);
+            string fakeTortoise = Path.Combine(dir, "TortoiseGitProc.exe");
+            File.Copy(Self, fakeTortoise);
+            string path = Path.Combine(dir, "index.lock");
+            OldLock(path);
+            using (var process = Process.Start(new ProcessStartInfo(fakeTortoise,
+                ProcessUtil.BuildArguments("--worker", "idle", dir, "15000"))
+                { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden }))
+            {
+                try
+                {
+                    WaitFile(Path.Combine(dir, "idle-started"));
+                    ProcessResult ready = IndexLockPolicy.Prepare(path, "日志窗口已打开", null, CancellationToken.None, 4);
+                    Assert(ready.Ok && !File.Exists(path) && !process.HasExited, "新开的 TortoiseGit GUI 不应阻塞稳定旧锁: " + ready.Stderr);
+                    Pass("TortoiseGit 进程仍运行时可清理其启动前的稳定旧锁，无需关闭日志窗口");
+                    OldLock(path);
+                    using (var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+                    {
+                        ready = IndexLockPolicy.Prepare(path, "仍有句柄占用", null, CancellationToken.None, 3);
+                        Assert(!ready.Ok && File.Exists(path), "即使 GUI 晚于锁启动，锁仍被占用也不得删除");
+                    }
+                    Pass("时间关系排除新 GUI 后，实际锁句柄保护仍然有效");
+                }
+                finally
+                {
+                    if (!process.HasExited) process.Kill(); // 只停止本测试创建的 idle 进程。
+                    process.WaitForExit();
+                    File.Delete(path);
+                }
+            }
         }
 
         private static void TestIndexLockPolicy()

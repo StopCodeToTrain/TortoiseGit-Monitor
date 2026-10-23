@@ -8,7 +8,7 @@
 
 ## 下载与启动
 
-1. 在 [Releases](https://github.com/StopCodeToTrain/TortoiseGit-Monitor/releases) 下载 `TortoiseGit-Monitor-v1.0.0-windows.zip`。可用该页的 `SHA256SUMS.txt` 核对 ZIP 的 SHA-256。
+1. 在 [Releases](https://github.com/StopCodeToTrain/TortoiseGit-Monitor/releases) 下载 `TortoiseGit-Monitor-v1.0.1-windows.zip`。可用该页的 `SHA256SUMS.txt` 核对 ZIP 的 SHA-256。
 2. 将 ZIP 完整解压到一个可写的固定目录，例如 `D:\Apps\TortoiseGit-Monitor`。不要直接在压缩包中运行。
 3. 保持 `TortoiseGitMonitor.exe` 与 `TortoiseGitMonitor.exe.config` 在同一目录，双击 exe。程序启动后显示在系统托盘，可能位于托盘的折叠区域；没有常驻主窗口。
 4. 右键托盘图标 → **设置**，添加需要扫描的父目录并保存。程序最多扫描 3 层。按需调整检测间隔，或启用随 Windows 启动。
@@ -42,7 +42,7 @@
 - 仅支持 Windows；本次发布验证环境为 Windows 11 x64、.NET Framework 4.8 目标框架（运行时 4.8.10008）、Git for Windows 2.55.0.windows.5。未在 Windows 10、Windows ARM 或所有旧 Git 版本上逐一验证。
 - 二进制文件未做代码签名，无自动更新器；升级需下载并替换文件。
 - 自动检测只执行 fetch 和状态读取；合并、冲突处理、提交和推送不会在后台自动完成。分叉合并和冲突需要人工处理。
-- 失效锁清理采用保守检查。其他仓库的 Git 活动或无法确认的进程状态也会阻止清理；30 秒后仍存在的锁会导致本次任务停止。
+- 失效锁清理采用保守检查。其他仓库的 Git 活动、可能早于锁启动的 TortoiseGit 进程或无法确认的状态也会阻止清理；30 秒后仍存在的锁会导致本次任务停止。明确晚于锁两项文件时间的新 TortoiseGit 窗口不再阻止旧锁清理，实际句柄占用仍优先拦截。
 - stash 恢复保护会在 stash 栈被外部改动、分支不匹配、改动无法合并或前次恢复结果不明时停止，需要人工检查。不会保证任意重叠改动都能自动合并。
 - 未跟踪文件自动备份仅处理阻塞快进的普通文件，拒绝链接、越界路径和嵌套仓库。备份不会自动清理，应在确认内容后自行归档。
 - 多个 Monitor 实例的互斥范围是同一 Windows 登录会话；外部 Git/TortoiseGit 仍依赖 Git 自身锁协调，请避免同时在同一仓库进行写操作。

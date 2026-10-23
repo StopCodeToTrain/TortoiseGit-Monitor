@@ -1,5 +1,13 @@
 # 更新记录
 
+## v1.0.1 — 2026-10-23
+
+- 修复新打开的 TortoiseGit 窗口错误阻塞遗留 `index.lock` 清理：进程启动时间明确晚于锁的创建和最后写入时间时，不再把该进程当成原锁持有者。
+- 同时比较两项文件时间并保留 1 秒余量；启动时间早于任一文件时间或进程状态未知时仍停止清理。不会只凭日志窗口的命令名放行。
+- 保留 Git 进程检查、两分钟失效时间、稳定观察、文件身份复核和独占句柄保护；新增 GUI 时间关系与实际句柄占用回归用例。
+
+复现本次锁策略回归：`RegressionTests.exe --lock-regression-only`。验证记录见 [tests/VERIFICATION.md](tests/VERIFICATION.md)。
+
 ## v1.0.0 — 2026-10-21
 
 首个正式 GitHub Release，提供 Windows 便携运行包。

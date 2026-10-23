@@ -113,7 +113,7 @@ namespace TortoiseGitMonitor
                     Snapshot current = ReadSnapshot(file);
                     if (!current.Equals(expected) || !current.IsOld)
                         return "锁在等待期间被替换或更新，未删除";
-                    string active = ActiveGitProcesses();
+                    string active = ActiveGitProcesses(current);
                     if (active.Length > 0) return active + "；无法确认锁已失效，未删除";
                     if (cancel.IsCancellationRequested || (stopRequested != null && stopRequested()))
                         return "已收到停止请求，未删除锁";
@@ -127,7 +127,12 @@ namespace TortoiseGitMonitor
             catch (Exception ex) { return "清理失败，未继续写入（" + ex.Message + "）"; }
         }
 
-        private static string ActiveGitProcesses()
+        // Windows 的文件创建时间可能因名称隧道效应保留旧值，必须同时比较最后写入时间。
+        // 留一秒余量；不能确认进程早晚关系时，继续把它视为潜在持锁者。
+        internal static bool TortoiseGitCouldOwnLock(DateTime startedUtc, DateTime createdUtc, DateTime writtenUtc) =>
+            startedUtc <= createdUtc.AddSeconds(1) || startedUtc <= writtenUtc.AddSeconds(1);
+
+        private static string ActiveGitProcesses(Snapshot lockedFile)
         {
             var active = new List<string>();
             Process[] processes;
@@ -140,9 +145,15 @@ namespace TortoiseGitMonitor
                     try
                     {
                         string name = process.ProcessName;
-                        if (name.Equals("git", StringComparison.OrdinalIgnoreCase) ||
-                            name.StartsWith("git-", StringComparison.OrdinalIgnoreCase) ||
-                            name.Equals("TortoiseGitProc", StringComparison.OrdinalIgnoreCase))
+                        bool git = name.Equals("git", StringComparison.OrdinalIgnoreCase) ||
+                            name.StartsWith("git-", StringComparison.OrdinalIgnoreCase);
+                        bool tortoise = name.Equals("TortoiseGitProc", StringComparison.OrdinalIgnoreCase);
+                        // 日志窗口等新 GUI 不可能创建或写入启动前已经稳定存在的这个锁文件。
+                        // 不能只按 /command:log 放行：日志窗口也能发起 reset、cherry-pick 等写操作。
+                        if (tortoise && !TortoiseGitCouldOwnLock(process.StartTime.ToUniversalTime(),
+                            lockedFile.CreationUtc, lockedFile.LastWriteUtc))
+                            continue;
+                        if (git || tortoise)
                             active.Add(name + "(PID=" + process.Id + ")");
                     }
                     catch (InvalidOperationException) { /* 已退出的进程没有锁所有权 */ }
